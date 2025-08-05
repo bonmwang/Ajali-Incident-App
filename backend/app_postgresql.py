@@ -11,7 +11,7 @@ import psycopg2.extras
 import os
 
 # Initialize Flask app
-app = Flask(_name_)
+app = Flask(__name__)
 # Enable CORS for all domains to allow the React frontend to connect
 CORS(app)
 
