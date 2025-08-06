@@ -8,7 +8,7 @@ const App = () => {
   const [incidents, setIncidents] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const API_BASE_URL = 'http://localhost:5000';
+  const API_BASE_URL = 'https://ajali-incident-app-3.onrender.com';
 
   // Function to fetch all incidents - Wrapped in useCallback for useEffect dependency
   const fetchIncidents = useCallback(async () => {

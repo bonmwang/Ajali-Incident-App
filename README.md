@@ -2,6 +2,10 @@
 Ajali Incident Reporting System
 https://example.com/path/to/banner-image.jpg ← Add your project banner image here
 
+Frontend deployment link -> https://vercel.com/boniface-mwangis-projects/ajali-incident-app
+
+Backend deployment link -> https://ajali-incident-app-3.onrender.com
+
 Table of Contents
 Project Overview
 
