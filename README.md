@@ -6,7 +6,7 @@ Frontend deployment link -> https://vercel.com/boniface-mwangis-projects/ajali-i
 
 Backend deployment link -> https://ajali-incident-app-3.onrender.com
 
-Table of Contents
+Table of Contents:
 Project Overview
 
 Features
