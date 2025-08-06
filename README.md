@@ -98,8 +98,9 @@ npm or yarn
 
 Backend Setup
 bash
+# Fork the repository.
 # Clone the repository
-git clone https://github.com/yourusername/ajali-incident-app.git
+git clone https://github.com/bonmwang/ajali-incident-app.git
 cd ajali-incident-app/backend
 
 # Create and activate virtual environment
