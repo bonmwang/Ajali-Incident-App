@@ -103,7 +103,7 @@ bash
 git clone https://github.com/bonmwang/ajali-incident-app.git
 cd ajali-incident-app/backend
 
-# Create and activate virtual environment
+# Create & activate virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
