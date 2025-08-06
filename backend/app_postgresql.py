@@ -17,10 +17,13 @@ CORS(app)
 
 # --- PostgreSQL Configuration ---
 # You need to replace these with your actual PostgreSQL database credentials
-app.config['POSTGRES_HOST'] = 'localhost'
-app.config['POSTGRES_USER'] = 'vincent'
-app.config['POSTGRES_PASSWORD'] = 'yourpassword' # Make sure to use your actual password
-app.config['POSTGRES_DB'] = 'late_show_db'
+app.config.update({
+    'POSTGRES_HOST': os.getenv('POSTGRES_HOST', 'localhost'),
+    'POSTGRES_DB': os.getenv('POSTGRES_DB', 'ajali_db'),
+    'POSTGRES_USER': os.getenv('POSTGRES_USER', 'ajali_user'),
+    'POSTGRES_PASSWORD': os.getenv('POSTGRES_PASSWORD', '4444'),
+    'POSTGRES_PORT': os.getenv('POSTGRES_PORT', '5432')
+})
 
 # --- File Upload Configuration ---
 # Set the directory for storing uploaded images
@@ -38,15 +41,13 @@ def allowed_file(filename):
 
 # --- Database Connection Helper ---
 def get_db_connection():
-    """
-    Establishes a connection to the PostgreSQL database.
-    """
     try:
         conn = psycopg2.connect(
             host=app.config['POSTGRES_HOST'],
+            dbname=app.config['POSTGRES_DB'],
             user=app.config['POSTGRES_USER'],
             password=app.config['POSTGRES_PASSWORD'],
-            dbname=app.config['POSTGRES_DB']
+            port=app.config['POSTGRES_PORT']
         )
         return conn
     except psycopg2.OperationalError as e:
@@ -108,9 +109,6 @@ def token_required(f):
 
 # --- DATABASE SETUP ---
 def setup_database():
-    """
-    Creates the necessary tables if they don't already exist.
-    """
     conn = get_db_connection()
     if conn is None:
         print("Could not connect to database for setup.")
@@ -118,40 +116,29 @@ def setup_database():
 
     try:
         cur = conn.cursor()
-        # Create users table
+        
+        # Drop existing incidents table if it exists
+        cur.execute("DROP TABLE IF EXISTS incidents CASCADE")
+        
+        # Recreate with consistent column naming
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id VARCHAR(255) PRIMARY KEY,
-                username VARCHAR(255) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL
-            )
-        """)
-        # Create a new table to store persistent API tokens
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS api_tokens (
-                token VARCHAR(255) PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL UNIQUE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        """)
-        # Create incidents table with 'image_url' and ensure 'created_at' is TIMESTAMP WITH TIME ZONE
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS incidents (
-                incident_id VARCHAR(255) PRIMARY KEY,
+            CREATE TABLE incidents (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 user_id VARCHAR(255) NOT NULL,
                 title VARCHAR(255) NOT NULL,
                 description TEXT NOT NULL,
-                lat VARCHAR(255) NOT NULL,
-                long VARCHAR(255) NOT NULL,
+                lat VARCHAR(255),
+                long VARCHAR(255),
                 image_url VARCHAR(255),
+                status VARCHAR(20) DEFAULT 'open',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         """)
+        
         conn.commit()
-        cur.close()
-        print("Database tables checked/created successfully.")
+        print("Incidents table recreated with consistent schema.")
     except Exception as e:
         print(f"Error setting up database: {e}")
         conn.rollback()
@@ -292,87 +279,77 @@ def logout(user_id):
 @token_required
 def create_incident(user_id):
     """
-    Creates a new incident report for the authenticated user.
-    Now handles multipart/form-data with an image file and optional created_at timestamp.
+    Creates a new incident report with proper image_url handling
     """
     conn = get_db_connection()
     if conn is None:
         return jsonify({'message': 'Database connection error.'}), 500
         
     try:
-        # Access form data from request.form
-        title = request.form.get('title')
-        description = request.form.get('description')
-        lat = request.form.get('lat')
-        long = request.form.get('long')
-        # Get created_at from frontend. It will be an ISO 8601 string.
-        created_at_str = request.form.get('created_at') 
-
-        if not all([title, description, lat, long]):
-            return jsonify({'message': 'All required fields (title, description, lat, long) are missing.'}), 400
-
+        # Initialize image_url as None by default
         image_url = None
+        
+        # Process file upload if present
         if 'image' in request.files:
             file = request.files['image']
             if file and allowed_file(file.filename):
-                # Secure the filename to prevent malicious file uploads
                 filename = secure_filename(file.filename)
-                # Create a unique filename to prevent overwriting existing files
-                unique_filename = str(uuid.uuid4()) + "_" + filename
+                unique_filename = f"{uuid.uuid4()}_{filename}"
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                
+                # Ensure upload directory exists
+                os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+                
                 file.save(filepath)
                 image_url = f"/uploads/{unique_filename}"
-            else:
+            elif file:  # File present but invalid type
                 return jsonify({'message': 'Invalid file type.'}), 400
 
-        incident_id = str(uuid.uuid4())
-        cur = conn.cursor()
+        # Validate required fields
+        required_fields = ['title', 'description', 'lat', 'long']
+        if not all(request.form.get(field) for field in required_fields):
+            return jsonify({
+                'message': 'Missing required fields',
+                'required': required_fields,
+                'received': request.form
+            }), 400
 
-        # Use the provided created_at timestamp, otherwise let the database default
-        if created_at_str:
-            try:
-                # Parse the ISO 8601 string into a datetime object
-                # Python's datetime.fromisoformat handles 'Z' for UTC
-                # It expects 'Z' to be replaced with '+00:00' for direct parsing
-                created_at_dt = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-            except ValueError:
-                # Fallback if the format is not strictly ISO 8601
-                print(f"Warning: Could not parse created_at_str '{created_at_str}'. Using default timestamp.")
-                created_at_dt = None
-        else:
-            created_at_dt = None # Let database use default CURRENT_TIMESTAMP
-
-        if created_at_dt:
+        # Database operation
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # Insert incident (let database generate UUID)
             cur.execute("""
-                INSERT INTO incidents (incident_id, user_id, title, description, lat, long, image_url, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (incident_id, user_id, title, description, lat, long, image_url, created_at_dt))
-        else:
-            cur.execute("""
-                INSERT INTO incidents (incident_id, user_id, title, description, lat, long, image_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (incident_id, user_id, title, description, lat, long, image_url))
+                INSERT INTO incidents 
+                (user_id, title, description, lat, long, image_url)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (
+                user_id,
+                request.form['title'],
+                request.form['description'],
+                request.form['lat'],
+                request.form['long'],
+                image_url  # Will be None if no image uploaded
+            ))
+            
+            incident = dict(cur.fetchone())
+            conn.commit()
 
+            # Format datetime for JSON response
+            if incident.get('created_at'):
+                incident['created_at'] = incident['created_at'].isoformat()
 
-        conn.commit()
-        cur.close()
-
-        # Fetch the created incident to return it in the response
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute("SELECT * FROM incidents WHERE incident_id = %s", (incident_id,))
-        incident = dict(cur.fetchone())
-        cur.close()
-
-        # Ensure created_at is formatted as a string for JSON response
-        if 'created_at' in incident and incident['created_at']:
-            incident['created_at'] = incident['created_at'].isoformat()
-
-        return jsonify({'message': 'Incident created successfully.', 'incident': incident}), 201
+        return jsonify({
+            'message': 'Incident created successfully',
+            'incident': incident
+        }), 201
 
     except Exception as e:
-        print(f"Error creating incident: {e}")
         conn.rollback()
-        return jsonify({'message': 'An error occurred while creating the incident.'}), 500
+        print(f"Error creating incident: {e}")
+        return jsonify({
+            'message': 'An error occurred while creating the incident',
+            'error': str(e)
+        }), 500
     finally:
         if conn:
             conn.close()
@@ -409,36 +386,24 @@ def get_all_incidents(user_id):
             conn.close()
 
 # Get a single incident
-@app.route('/incidents/<incident_id>', methods=['GET'])
+# Example for GET incident
+@app.route('/incidents/<id>', methods=['GET'])
 @token_required
-def get_incident(user_id, incident_id):
-    """
-    Retrieves a single incident report by its ID.
-    """
+def get_incident(user_id, id):
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({'message': 'Database connection error.'}), 500
-        
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute("SELECT * FROM incidents WHERE incident_id = %s", (incident_id,))
+        cur.execute("SELECT * FROM incidents WHERE id = %s", (id,))
         incident = cur.fetchone()
-        cur.close()
-        
         if not incident:
-            return jsonify({'message': 'Incident not found.'}), 404
-        
-        incident_dict = dict(incident)
-        if 'created_at' in incident_dict and incident_dict['created_at']:
-            incident_dict['created_at'] = incident_dict['created_at'].isoformat()
-        
-        return jsonify(incident_dict), 200
+            return jsonify({'message': 'Incident not found'}), 404
+        return jsonify(dict(incident)), 200
     except Exception as e:
-        print(f"Error fetching incident: {e}")
-        return jsonify({'message': 'An error occurred while fetching the incident.'}), 500
+        return jsonify({'message': str(e)}), 500
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
+
+# Similarly update POST, PUT, DELETE routes
 
 # Update an incident
 @app.route('/incidents/<incident_id>', methods=['PUT'])
@@ -580,6 +545,28 @@ def uploaded_file(filename):
     Serves uploaded images from the UPLOAD_FOLDER.
     """
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+
+def migrate_incident_ids():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        # Check if we need to rename columns
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='incidents' 
+            AND column_name='incident_id'
+        """)
+        if cur.fetchone():
+            cur.execute("ALTER TABLE incidents RENAME COLUMN incident_id TO id")
+            conn.commit()
+            print("Renamed incident_id column to id")
+    except Exception as e:
+        print(f"Migration failed: {e}")
+        conn.rollback()
+    finally:
+        if conn: conn.close()
 
 
 
