@@ -1,6 +1,6 @@
 # Ajali-Incident-App
 Ajali Incident Reporting System
-https://example.com/path/to/banner-image.jpg ← Add your project banner image here
+vercel link https://vercel.com/boniface-mwangis-projects/ajali-incident-app
 
 Table of Contents
 Project Overview
